@@ -1,0 +1,15 @@
+{# Shared by the job and transcript pages. back_href/back_label say where the
+   "back" link goes; delete_job_id, when set, adds the delete button. #}
+  <div class="topbar">
+    <a class="back" href="{{ back_href }}">&larr; {{ back_label }}</a>
+    <div class="textsize">
+      <button type="button" id="ts-down" title="Smaller text">A&minus;</button>
+      <output id="ts-value">100%</output>
+      <button type="button" id="ts-up" title="Larger text">A+</button>
+    </div>
+    {% if delete_job_id %}
+    <form method="post" action="/jobs/{{ delete_job_id }}/delete" onsubmit="return confirm('Delete this job?');">
+      <button type="submit" class="delete-btn" title="Delete this job">&#x2715; Delete</button>
+    </form>
+    {% endif %}
+  </div>

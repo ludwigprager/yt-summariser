@@ -1,0 +1,105 @@
+# Standalone stack for yt-summarize. No GPU needed here, since Whisper
+# transcribes on CPU. The only required outbound dependency is Ollama's HTTP
+# API at OLLAMA_HOST: by default an Ollama running on the docker host itself;
+# point it at another machine in .env (see .env.example).
+
+services:
+  # One-shot CLI path (summarise-yt-video.sh). profiles: ["tools"] keeps it
+  # out of `docker compose up`, which only starts web + nginx by default.
+  yt-summarize:
+    build: .
+    container_name: yt-summarize
+    profiles: ["tools"]
+    environment:
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
+      - SUMMARY_MODEL=${SUMMARY_MODEL:-qwen3.8:27b}
+      - WHISPER_MODEL_SIZE=${WHISPER_MODEL_SIZE:-medium}
+      - WHISPER_DEVICE=${WHISPER_DEVICE:-cpu}
+      - WHISPER_COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE:-int8}
+      - STT_MAX_CONCURRENT=${STT_MAX_CONCURRENT:-2}
+      # Context window asked of Ollama, which gives the prompt only half of
+      # it and silently drops the front of whatever overflows. 32768 is what
+      # this GPU can hold without spilling further; raising it to fit a long
+      # transcript costs weight layers (and speed) instead. See call_llm().
+      - OLLAMA_NUM_CTX=${OLLAMA_NUM_CTX:-32768}
+      # Optional: enables "hetzner:<model>" as a selectable model, routed to
+      # Hetzner's hosted inference instead of local Ollama. Empty/unset means
+      # that option just doesn't appear — see .env.example.
+      - HETZNER_INFERENCE_API_KEY=${HETZNER_INFERENCE_API_KEY:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # the default OLLAMA_HOST
+    volumes:
+      - ./data:/data                        # yt-summaries.jsonl lands here
+      - ./whisper-cache:/root/.cache/huggingface   # model weights, cached across runs
+
+  # Long-running web UI: submit a video ID, jobs are queued in SQLite and
+  # dispatched by a single background worker thread (enforced by --workers 1
+  # in web/Dockerfile — that's what stops concurrent submissions from
+  # double-claiming the same row). Every job then runs fully in parallel
+  # with every other one; only STT is capped, via STT_MAX_CONCURRENT inside
+  # entrypoint.sh itself.
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    container_name: yt-summarize-web
+    restart: unless-stopped
+    environment:
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
+      - SUMMARY_MODEL=${SUMMARY_MODEL:-qwen3.8:27b}
+      - WHISPER_MODEL_SIZE=${WHISPER_MODEL_SIZE:-medium}
+      - WHISPER_DEVICE=${WHISPER_DEVICE:-cpu}
+      - WHISPER_COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE:-int8}
+      - STT_MAX_CONCURRENT=${STT_MAX_CONCURRENT:-2}
+      # Context window asked of Ollama, which gives the prompt only half of
+      # it and silently drops the front of whatever overflows. 32768 is what
+      # this GPU can hold without spilling further; raising it to fit a long
+      # transcript costs weight layers (and speed) instead. See call_llm().
+      - OLLAMA_NUM_CTX=${OLLAMA_NUM_CTX:-32768}
+      # Optional: enables "hetzner:<model>" as a selectable model, routed to
+      # Hetzner's hosted inference instead of local Ollama. Empty/unset means
+      # that option just doesn't appear — see .env.example.
+      - HETZNER_INFERENCE_API_KEY=${HETZNER_INFERENCE_API_KEY:-}
+      # Optional: topic tagging (IT / POLITICS / OTHER) via laya on Ollaya.
+      # Empty/unset = no tagging.
+      - LAYA_HOST=${LAYA_HOST:-}
+      - LAYA_MODEL=${LAYA_MODEL:-laya}
+      # Optional: also tag with TypeSafe's Jev via Vercel AI Gateway, for
+      # comparison. Empty/unset = laya only. See .env.example.
+      - AI_GATEWAY_API_KEY=${AI_GATEWAY_API_KEY:-}
+      # Optional GPU leases (custodes): before calling Ollama a job waits until
+      # OLLAMA_LEASE_MIB fit beside the other stacks' leases, wakes Ollama if
+      # custodes stopped it, and holds the lease so nobody stops it mid-summary.
+      # Empty/unset = call Ollama directly. See OllamaLease in web/app.py.
+      - CUSTODES_CONTAINER=${CUSTODES_CONTAINER:-}
+      - OLLAMA_LEASE_MIB=${OLLAMA_LEASE_MIB:-11000}
+    volumes:
+      - ./data:/data
+      - ./whisper-cache:/root/.cache/huggingface
+      - ./web-data:/web-data                # jobs.db
+      # Only needed with CUSTODES_CONTAINER (`docker exec custodes ...`).
+      # Gives the container root-equivalent access to the host: drop this
+      # line if you don't use custodes.
+      - /var/run/docker.sock:/var/run/docker.sock
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # the default OLLAMA_HOST
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: yt-summarize-nginx
+    restart: unless-stopped
+    ports:
+      - "8090:80"
+    volumes:
+      - ./web/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - web
+
+# --- Usage -------------------------------------------------------------
+# One-shot CLI:
+#   docker compose run --rm yt-summarize "<youtube-url>"
+#   docker compose run --rm yt-summarize "<youtube-url>" llama3.1:8b   # override model
+#
+# Web service:
+#   docker compose up -d          # starts web + nginx (not yt-summarize)
+#   open http://localhost:8090

@@ -1,0 +1,13 @@
+# Created at runtime by summarise-yt-video.sh / the web service
+/data/
+/whisper-cache/
+/web-data/
+
+# Python bytecode cache
+__pycache__/
+
+# Claude Code project settings
+.claude/
+
+# Secrets — copy .env.example instead
+.env

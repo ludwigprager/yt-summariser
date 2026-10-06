@@ -1,0 +1,110 @@
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    /* The text column is a FRACTION OF THE VIEWPORT, not a fixed width.
+       That is what makes zoom reflow the page: zooming shrinks the viewport
+       measured in CSS pixels (a 1920px window is 960 CSS px at 200%) while the
+       font stays 16px, so a vw-based width buys progressively fewer characters
+       per line as you zoom in. A width in px, rem or ch cannot do this: zoom
+       scales those and the text by the same factor, so the line length never
+       changes, it just gets magnified.
+         max()  keeps a readable floor (28rem) once zoomed way in;
+         min()  clamps to the viewport so nothing is ever cut off. */
+    :root {
+      /* One knob: raise the vw share for longer lines, lower it for shorter. */
+      --measure: min(100%, max(28rem, 42vw));
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    /* Deliberately NOT setting text-size-adjust: the usual "-webkit-text-size-
+       adjust: 100%" boilerplate makes Chrome on Android ignore the user's
+       Settings > Accessibility > Text scaling slider, which is one of only two
+       ways text can actually be enlarged there (pinch-zoom is a pure visual
+       magnifier and reflows nothing, on any site). The other way is the A-/A+
+       control below. */
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: var(--measure);
+      margin: 2rem auto;
+      padding: 0 1rem;
+      color: #222;
+      overflow-wrap: break-word;
+    }
+    a { color: #06c; }
+    .topbar { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; margin-bottom: 1.5rem; }
+    .back { margin-right: auto; }
+    .topbar form { margin: 0; }
+    .delete-btn {
+      padding: .35rem .6rem;
+      font-size: .85rem;
+      line-height: 1;
+      color: #c62828;
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .delete-btn:hover { background: #fdecea; }
+    /* Scales the root font size, so text grows inside a column whose width is
+       pinned to the viewport — i.e. fewer characters per line, everything still
+       on screen. This is the part that works on Android, where the browser's
+       own zoom cannot reflow anything. */
+    .textsize { display: flex; align-items: center; gap: .25rem; }
+    .textsize button {
+      min-width: 2.5rem;
+      padding: .35rem .5rem;
+      font-size: 1rem;
+      line-height: 1;
+      color: #222;
+      background: #fff;
+      border: 1px solid #bbb;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .textsize button:disabled { opacity: .4; cursor: default; }
+    .textsize output { min-width: 4ch; color: #666; font-size: .85rem; text-align: center; }
+    h1 { font-size: clamp(1.35rem, 1.1rem + 1.5vw, 2rem); line-height: 1.25; }
+    h2 { border-bottom: 1px solid #ddd; padding-bottom: .3rem; margin-top: 2rem; }
+    pre {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font-family: inherit;
+      line-height: 1.5;
+      margin: 0;
+    }
+    @media (max-width: 30rem) {
+      body { margin: 1rem auto; }
+    }
+  </style>
+  <script>
+    // Applied before first paint so the meta-refresh on a running job doesn't
+    // flash the default size on every reload. Kept in localStorage, so the
+    // choice survives navigating between jobs.
+    (function () {
+      const MIN = 0.8, MAX = 2.6, STEP = 0.15;
+      let scale = parseFloat(localStorage.getItem("textScale"));
+      if (!(scale >= MIN && scale <= MAX)) scale = 1;
+
+      function apply() {
+        // 100% means "whatever the browser/OS says", so it is left alone —
+        // overriding it would re-break Android's own text scaling setting.
+        document.documentElement.style.fontSize = scale === 1 ? "" : scale * 100 + "%";
+        try { localStorage.setItem("textScale", scale); } catch (e) {}
+        const out = document.getElementById("ts-value");
+        if (!out) return;
+        out.textContent = Math.round(scale * 100) + "%";
+        document.getElementById("ts-down").disabled = scale <= MIN + 1e-9;
+        document.getElementById("ts-up").disabled = scale >= MAX - 1e-9;
+      }
+      apply();
+
+      addEventListener("DOMContentLoaded", function () {
+        function bump(by) {
+          scale = Math.min(MAX, Math.max(MIN, Math.round((scale + by) * 100) / 100));
+          apply();
+        }
+        document.getElementById("ts-down").addEventListener("click", () => bump(-STEP));
+        document.getElementById("ts-up").addEventListener("click", () => bump(STEP));
+        apply();
+      });
+    })();
+  </script>

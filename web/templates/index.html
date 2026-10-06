@@ -1,0 +1,401 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  {# Counted here rather than in app.py so both render paths (index and the
+     validation-error re-render of submit) get it for free. #}
+  {% set unread_count = jobs | selectattr("unread") | list | length %}
+  <title>{% if unread_count %}({{ unread_count }}) {% endif %}YouTube Summarizer</title>
+  <style>
+    /* Widths are viewport-relative rather than a fixed pixel column, so browser
+       zoom (which shrinks the viewport in CSS pixels while text keeps its size)
+       reflows the page — fewer characters per line — instead of pushing content
+       off the right edge. */
+    *, *::before, *::after { box-sizing: border-box; }
+    /* No text-size-adjust: the usual "100%" boilerplate makes Chrome on Android
+       ignore the user's Accessibility > Text scaling setting. */
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: min(110rem, 100%);
+      margin: 2rem auto;
+      padding: 0 1rem;
+      color: #222;
+      overflow-wrap: break-word;
+    }
+    h1 { font-size: clamp(1.35rem, 1.1rem + 1.5vw, 2rem); line-height: 1.25; }
+    form { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 1.5rem; }
+    input[type=text] { flex: 1 1 18ch; min-width: 0; padding: .5rem; font-size: 1rem; }
+    select { flex: 0 1 auto; max-width: 100%; padding: .5rem; font-size: 1rem; }
+    button { padding: .5rem 1rem; font-size: 1rem; cursor: pointer; }
+    .delete-btn { padding: .2rem .5rem; font-size: .85rem; color: #c62828; background: none; border: 1px solid #ddd; border-radius: 3px; }
+    .delete-btn:hover { background: #fdecea; }
+    /* Last resort while the table is still in its grid form: scroll the table
+       itself rather than the whole page, so no column is cut off. */
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: .5rem; border-bottom: 1px solid #ddd; vertical-align: top; }
+    th.sortable { cursor: pointer; user-select: none; }
+    th.sortable:hover { background: #f4f4f4; }
+    th.sortable::after { content: ""; display: inline-block; width: 1em; opacity: .4; }
+    th.sort-asc::after { content: "▲"; opacity: 1; }
+    th.sort-desc::after { content: "▼"; opacity: 1; }
+    .status-queued { color: #a67c00; }
+    .status-running { color: #0066cc; }
+    .status-done { color: #2e7d32; }
+    .status-error { color: #c62828; }
+    .error-msg { color: #c62828; margin-bottom: 1rem; }
+    /* Unviewed = finished but its detail page was never opened. Marked three
+       ways so it survives every layout: a badge, a bolder title, and a bar on
+       the row's leading edge (which the stacked layout turns into the card's
+       left border). */
+    tbody tr.unread { background: #f5f9ff; }
+    tbody tr.unread td:first-child { box-shadow: inset 3px 0 0 #0066cc; }
+    tbody tr.unread .video-title { font-weight: 600; }
+    .badge-new {
+      display: inline-block;
+      margin-right: .4rem;
+      padding: 0 .35rem;
+      border-radius: 3px;
+      background: #0066cc;
+      color: #fff;
+      font-size: .7rem;
+      font-weight: 600;
+      letter-spacing: .03em;
+      text-transform: uppercase;
+      vertical-align: .1em;
+    }
+    .unread-bar { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; margin-bottom: 1rem; }
+    .unread-count { font-weight: 600; color: #0066cc; }
+    .hint { color: #666; font-size: .9rem; margin-top: -1rem; margin-bottom: 1.5rem; }
+    .tokens { list-style: none; margin: 0; padding: 0; font-size: .85rem; font-variant-numeric: tabular-nums; }
+    /* Kept on one line: the numbers are short, and the table as a whole is
+       already protected from overflow by .table-wrap / the stacked layout. */
+    .tokens li { display: flex; justify-content: space-between; gap: .75rem; white-space: nowrap; line-height: 1.4; }
+    .tokens .tk-stage { color: #666; font-weight: 400; }
+    .tokens .tk-total { border-top: 1px solid #ddd; margin-top: .15rem; padding-top: .15rem; font-weight: 600; }
+    .tokens .tk-total .tk-stage { color: #222; font-weight: 600; }
+
+    /* Narrow viewport — a small screen, or a zoomed-in large one: the table
+       stops being a grid and each job becomes a stacked label/value card, so
+       every field stays readable without sideways scrolling. Labels come from
+       the data-label attributes on the cells. */
+    @media (max-width: 60rem) {
+      body { margin: 1rem auto; }
+      .table-wrap { overflow-x: visible; }
+      table, tbody, tr, td { display: block; width: auto; }
+      /* The header row turns into a wrapping strip of sort buttons: click-to-sort
+         keeps working when the grid is gone, and the labels that used to live in
+         it are repeated per cell below. */
+      thead, thead tr, thead th { display: block; }
+      thead tr { display: flex; flex-wrap: wrap; gap: .25rem; margin-bottom: .75rem; }
+      thead th:not(.sortable) { display: none; }
+      thead th.sortable {
+        border: 1px solid #ddd;
+        border-radius: 3px;
+        padding: .25rem .5rem;
+        font-size: .85rem;
+        font-weight: 400;
+      }
+      tbody tr {
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        padding: .5rem .75rem;
+        margin-bottom: .75rem;
+      }
+      /* No first column to hang the bar off once the grid is gone. */
+      tbody tr.unread { border-left: 3px solid #0066cc; }
+      tbody tr.unread td:first-child { box-shadow: none; }
+      tbody td {
+        display: grid;
+        grid-template-columns: minmax(0, 9ch) minmax(0, 1fr);
+        gap: .25rem .75rem;
+        padding: .25rem 0;
+        border-bottom: none;
+      }
+      tbody td::before {
+        content: attr(data-label);
+        color: #666;
+        font-size: .85rem;
+      }
+      tbody td:empty { display: none; }
+      /* Free of the narrow table column, the token list would otherwise stretch
+         its label and number to opposite edges of the card. */
+      .tokens { max-width: 16rem; }
+    }
+    @media (max-width: 30rem) {
+      tbody td { grid-template-columns: minmax(0, 1fr); gap: 0; }
+      tbody td::before { display: block; }
+    }
+    .cat-row { display: block; margin-bottom: .3em; }
+    .cat-src { font-size: .7em; color: #6b7280; margin-right: .3em; }
+    .cat { font-weight: 600; font-size: .85em; }
+    .cat-diff { display: inline-block; font-size: .7em; font-weight: 600; color: #b91c1c; border: 1px solid currentColor; border-radius: .3em; padding: 0 .3em; }
+    .cat-it { color: #1f6feb; }
+    .cat-politics { color: #c2410c; }
+    .cat-other, .cat-error { color: #6b7280; }
+    .cat-num { display: block; font-size: .75em; color: #6b7280; white-space: nowrap; }
+    .topics { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; margin-bottom: 1rem; }
+    .topics-label { color: #666; font-size: .9rem; }
+    .topic-btn { padding: .25rem .75rem; font-size: .85rem; font-weight: 600; border: 1px solid currentColor; border-radius: 999px; background: #fff; }
+    .topic-btn[aria-pressed="true"] { color: #fff; }
+    .topic-btn.cat-it[aria-pressed="true"] { background: #1f6feb; border-color: #1f6feb; }
+    .topic-btn.cat-politics[aria-pressed="true"] { background: #c2410c; border-color: #c2410c; }
+    .topic-btn.cat-other[aria-pressed="true"] { background: #6b7280; border-color: #6b7280; }
+    .topic-btn.flag-btn { color: #444; }
+    .topic-btn.flag-btn[aria-pressed="true"] { color: #fff; background: #444; border-color: #444; }
+    .reset-btn { padding: .25rem .75rem; font-size: .85rem; border: 1px solid #ddd; border-radius: 3px; background: #fff; color: #444; }
+    .text-filter { flex: 0 1 24ch; min-width: 0; padding: .25rem .5rem; font-size: .85rem; }
+    .reset-btn:disabled { opacity: .4; cursor: default; }
+    tbody tr.filtered { display: none; }
+  </style>
+</head>
+<body>
+  <h1>YouTube Summarizer</h1>
+
+  {# Filters. Nothing pressed = every job shows. Pressed buttons in the same
+     row are alternatives (POLITICS + IT = either); rows narrow each other
+     (POLITICS + ready = both). Each button's data-filter is matched against
+     the space-separated data-filter tags on the rows below. Text narrows
+     like one more row: only jobs whose summary contains it (via /search). #}
+  <div class="topics">
+    <span class="topics-label">Text:</span>
+    <input type="search" class="text-filter" id="filter-text" placeholder="in summary" autocapitalize="off" spellcheck="false">
+  </div>
+  <div class="topics">
+    <span class="topics-label">Topic:</span>
+    {% for topic in topics %}
+    <button type="button" class="topic-btn cat-{{ topic|lower }}" data-filter="topic:{{ topic }}" aria-pressed="false">{{ topic }}</button>
+    {% endfor %}
+  </div>
+  <div class="topics">
+    <span class="topics-label">Status:</span>
+    <button type="button" class="topic-btn flag-btn" data-filter="status:busy" aria-pressed="false" title="jobs still queued or running">in progress</button>
+    <button type="button" class="topic-btn flag-btn" data-filter="status:ready" aria-pressed="false" title="jobs that finished with a summary">ready</button>
+    <button type="button" class="topic-btn flag-btn" data-filter="status:failed" aria-pressed="false" title="jobs that ended in an error">failed</button>
+    {% set failed_count = jobs|selectattr("status", "equalto", "error")|list|length %}
+    {% if failed_count %}
+    <form method="post" action="/jobs/retry-failed" style="display:inline" onsubmit="return confirm('Requeue all {{ failed_count }} failed jobs?');">
+      <button type="submit" class="reset-btn" title="put every failed job back in the queue">retry {{ failed_count }} failed</button>
+    </form>
+    {% endif %}
+  </div>
+  <div class="topics">
+    <span class="topics-label">Other:</span>
+    <button type="button" class="topic-btn flag-btn" data-filter="flag:new" aria-pressed="false" title="finished jobs whose result was never opened (the ones badged &quot;new&quot;)">new</button>
+    <button type="button" class="topic-btn flag-btn" data-filter="flag:viewed" aria-pressed="false" title="jobs whose result you have already opened">viewed</button>
+    <button type="button" class="topic-btn flag-btn" data-filter="flag:differ" aria-pressed="false" title="jobs laya and Jev tagged with different topics">laya ≠ jev</button>
+    <button type="button" class="reset-btn" id="filter-reset">reset filters</button>
+  </div>
+
+  {% if unread_count %}
+  <div class="unread-bar">
+    <span class="unread-count">{{ unread_count }} finished job{{ "s" if unread_count != 1 }} not yet viewed</span>
+  </div>
+  {% endif %}
+
+  {% if error %}
+  <p class="error-msg">{{ error }}</p>
+  {% endif %}
+
+  <form method="post" action="/submit">
+    <input type="text" name="video_id" placeholder="Video URL or YouTube video ID" required
+           inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false">
+    <select name="model">
+      <optgroup label="Local ({{ ollama_host }})">
+        {% for m in local_models %}
+        <option value="{{ m }}" {% if m == default_model %}selected{% endif %}>{{ m }}</option>
+        {% endfor %}
+      </optgroup>
+      {% if hetzner_models %}
+      <optgroup label="Hetzner (free, rate-limited, remote)">
+        {% for m in hetzner_models %}
+        <option value="{{ m }}">{{ m }}</option>
+        {% endfor %}
+      </optgroup>
+      {% endif %}
+    </select>
+    <button type="submit">Summarize</button>
+  </form>
+  <p class="hint">
+    Jobs run one at a time; submitting while one is in progress just queues it.
+    "Local" models are pulled and run on <code>{{ ollama_host }}</code>'s own GPU.
+    {% if hetzner_models %}"Hetzner" models run on Hetzner's hosted inference instead — free while
+    experimental, but rate-limited (10 requests/min).{% endif %}
+  </p>
+
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th class="sortable" data-type="number">#</th>
+        <th class="sortable" data-type="text">Video</th>
+        <th>Result</th>
+        <th class="sortable" data-type="text" title="topic tag from laya (local) and Jev (TypeSafe): prob = probability of the label, conf = the model's confidence">Category</th>
+        <th class="sortable" data-type="text">Channel</th>
+        <th class="sortable" data-type="text">Model</th>
+        <th class="sortable" data-type="text">Status</th>
+        <th class="sortable" data-type="text">Submitted</th>
+        <th class="sortable" data-type="number">Elapsed</th>
+        <th class="sortable" data-type="number">Tokens</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for job in jobs %}
+      <tr {% if job.unread %}class="unread"{% endif %} data-id="{{ job.id }}" data-filter="
+        {%- if job.category %}topic:{{ job.category }} {% endif %}
+        {%- if job.jev_category %}topic:{{ job.jev_category }} {% endif %}
+        {%- if job.status in ('queued', 'running') %}status:busy {% elif job.status == 'done' %}status:ready {% elif job.status == 'error' %}status:failed {% endif %}
+        {%- if job.unread %}flag:new {% elif job.viewed_at %}flag:viewed {% endif %}
+        {%- if job.category and job.jev_category and job.category != job.jev_category %}flag:differ{% endif %}">
+        <td data-label="#" data-sort="{{ job.id }}">{{ job.id }}</td>
+        <td data-label="Video">{% if job.unread %}<span class="badge-new">new</span>{% endif %}<a class="video-title" href="{{ job.source_url }}" target="_blank" rel="noopener">{{ job.title or job.video_id or job.source_url }}</a></td>
+        {# Kept on one line so a cell with nothing to show is genuinely :empty
+           and the stacked narrow-viewport layout can drop it, label and all. #}
+        <td data-label="Result">{% if job.status == 'done' and (job.summary_de or job.summary) %}<a href="/jobs/{{ job.id }}">anzeigen</a>{% elif job.status == 'error' %}<a href="/jobs/{{ job.id }}" class="status-error">view error</a>{% endif %}</td>
+        <td data-label="Category" data-sort="{{ job.category or '~' }}">{% for name, cat, prob, conf in [("laya", job.category, job.category_p, job.category_confidence), ("jev", job.jev_category, job.jev_p, job.jev_confidence)] %}{% if cat %}<span class="cat-row"><span class="cat-src">{{ name }}</span><span class="cat cat-{{ cat|lower }}">{{ cat }}</span>{% if prob is not none %}<span class="cat-num">prob {{ "%.2f"|format(prob) }} · conf {{ "%.2f"|format(conf) }}</span>{% endif %}</span>{% endif %}{% endfor %}{% if job.category and job.jev_category and job.category != job.jev_category %}<span class="cat-diff">differ</span>{% endif %}</td>
+        <td data-label="Channel">{{ job.channel or "-" }}</td>
+        <td data-label="Model">{{ job.model or "-" }}</td>
+        {# Sort key puts unviewed results first within the Status column, so the
+           column doubles as a "what still needs looking at" sort. #}
+        <td data-label="Status" class="status-{{ job.status }}" data-sort="{{ '0' if job.unread else '1' }}{{ job.status }}">{{ job.stage if job.status == 'running' and job.stage else job.status }}</td>
+        <td data-label="Submitted" data-sort="{{ job.submitted_at }}">{{ job.submitted_at }}</td>
+        <td data-label="Elapsed" data-sort="{{ job.elapsed_seconds if job.elapsed_seconds is not none else -1 }}">{{ job.elapsed or "-" }}</td>
+        <td data-label="Tokens" data-sort="{{ (job.summary_tokens or 0) + (job.translate_tokens or 0) }}">
+          {% if job.summary_tokens or job.translate_tokens %}
+          <ul class="tokens">
+            <li><span class="tk-stage">summarize</span><span>{{ job.summary_tokens or 0 }}</span></li>
+            {% if job.translate_tokens %}
+            <li><span class="tk-stage">translate</span><span>{{ job.translate_tokens }}</span></li>
+            <li class="tk-total"><span class="tk-stage">total</span><span>{{ (job.summary_tokens or 0) + job.translate_tokens }}</span></li>
+            {% endif %}
+          </ul>
+          {% else %}-{% endif %}
+        </td>
+        <td data-label="Delete">
+          <form method="post" action="/jobs/{{ job.id }}/delete" onsubmit="return confirm('Delete this job?');">
+            <button type="submit" class="delete-btn" title="Delete">✕</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="11">No jobs yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+
+  <script>
+    // Filters (see the comment above the filter bar). The selection lives in
+    // localStorage so it survives the 15s auto-reload below and later visits.
+    (function () {
+      const KEY = "jobFilter";
+      const buttons = Array.from(document.querySelectorAll("[data-filter]:not(tr)"));
+      const reset = document.getElementById("filter-reset");
+      const textInput = document.getElementById("filter-text");
+      const TEXT_KEY = "jobFilterText";
+      let textIds = null;  // Set of job ids matching the text, or null = no text filter
+      try { textInput.value = localStorage.getItem(TEXT_KEY) || ""; } catch (e) {}
+      let selected = [];
+      try { selected = JSON.parse(localStorage.getItem(KEY)) || []; } catch (e) {}
+      // Drop anything saved that no button offers any more.
+      selected = selected.filter((f) => buttons.some((b) => b.dataset.filter === f));
+
+      function apply() {
+        buttons.forEach((b) => b.setAttribute("aria-pressed", selected.includes(b.dataset.filter)));
+        reset.disabled = !selected.length && !textInput.value.trim();
+        const rows = {};  // row prefix ("topic") -> its pressed filters
+        selected.forEach((f) => (rows[f.split(":")[0]] ||= []).push(f));
+        document.querySelectorAll("tbody tr[data-filter]").forEach((r) => {
+          const tags = r.dataset.filter.split(" ");
+          const show = Object.values(rows).every((fs) => fs.some((f) => tags.includes(f)))
+            && (!textIds || textIds.has(Number(r.dataset.id)));
+          r.classList.toggle("filtered", !show);
+        });
+      }
+
+      function save() {
+        try { localStorage.setItem(KEY, JSON.stringify(selected)); } catch (e) {}
+        apply();
+      }
+
+      buttons.forEach((b) => b.addEventListener("click", () => {
+        const f = b.dataset.filter;
+        selected = selected.includes(f) ? selected.filter((x) => x !== f) : [...selected, f];
+        save();
+      }));
+      // Only the newest request's answer counts, in case replies overtake each other.
+      let textSeq = 0;
+      function searchText() {
+        const q = textInput.value.trim();
+        try { localStorage.setItem(TEXT_KEY, q); } catch (e) {}
+        const seq = ++textSeq;
+        if (!q) { textIds = null; apply(); return; }
+        fetch("/search?q=" + encodeURIComponent(q))
+          .then((r) => r.json())
+          .then((d) => { if (seq === textSeq) { textIds = new Set(d.ids); apply(); } });
+      }
+      let textTimer;
+      textInput.addEventListener("input", () => {
+        clearTimeout(textTimer);
+        textTimer = setTimeout(searchText, 250);
+      });
+
+      reset.addEventListener("click", () => {
+        selected = [];
+        textInput.value = "";
+        searchText();
+        save();
+      });
+      try { localStorage.removeItem("topicFilter"); localStorage.removeItem("hideFilter"); } catch (e) {}
+      apply();
+      if (textInput.value.trim()) searchText();
+    })();
+
+    // Live job status, by reloading. Results open in their own page, so a
+    // refresh has nothing to yank shut mid-read.
+    setInterval(function () { location.reload(); }, 15000);
+
+    // Click-to-sort on column headers. Reads each cell's data-sort
+    // attribute when present (used for numeric/ISO-timestamp columns so
+    // sorting isn't fooled by formatted display text like "1m 23s"),
+    // falling back to the cell's own text otherwise.
+    (function () {
+      const table = document.querySelector("table");
+      const tbody = table.querySelector("tbody");
+      const headers = Array.from(table.querySelectorAll("thead th"));
+      let sortCol = null;
+      let sortDir = 1;
+
+      headers.forEach((th, colIndex) => {
+        if (!th.classList.contains("sortable")) return;
+        th.addEventListener("click", () => {
+          sortDir = sortCol === colIndex ? -sortDir : 1;
+          sortCol = colIndex;
+
+          const type = th.dataset.type || "text";
+          const rows = Array.from(tbody.querySelectorAll("tr")).filter(
+            (r) => r.children.length > 1
+          );
+          rows.sort((a, b) => {
+            const cellA = a.children[colIndex];
+            const cellB = b.children[colIndex];
+            const av = cellA.dataset.sort ?? cellA.textContent.trim();
+            const bv = cellB.dataset.sort ?? cellB.textContent.trim();
+            if (type === "number") {
+              return (parseFloat(av) - parseFloat(bv)) * sortDir;
+            }
+            return av.localeCompare(bv) * sortDir;
+          });
+          rows.forEach((r) => tbody.appendChild(r));
+
+          headers.forEach((h) => h.classList.remove("sort-asc", "sort-desc"));
+          th.classList.add(sortDir === 1 ? "sort-asc" : "sort-desc");
+        });
+      });
+    })();
+  </script>
+
+</body>
+</html>

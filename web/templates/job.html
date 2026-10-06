@@ -1,0 +1,111 @@
+<!doctype html>
+<html>
+<head>
+  {% if job.status in ('queued', 'running') %}
+  <meta http-equiv="refresh" content="5">
+  {% endif %}
+  <title>{{ job.title or job.video_id }} — YouTube Summarizer</title>
+  {% include "_head.html" %}
+  <style>
+    dl {
+      display: grid;
+      grid-template-columns: minmax(0, max-content) minmax(0, 1fr);
+      gap: .3rem 1rem;
+      margin: 0 0 1.5rem;
+    }
+    dt { color: #666; }
+    dd { margin: 0; min-width: 0; }
+    .status-queued { color: #a67c00; }
+    .status-running { color: #0066cc; }
+    .status-done { color: #2e7d32; }
+    .status-error { color: #c62828; }
+    .error pre { color: #c62828; }
+    .note { color: #666; font-size: .9rem; }
+    .tokens { list-style: none; margin: 0; padding: 0; font-size: .85rem; font-variant-numeric: tabular-nums; }
+    .tokens li {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 0 .75rem;
+      line-height: 1.4;
+      max-width: 18rem;
+    }
+    .tokens .tk-stage { color: #666; font-weight: 400; }
+    .tokens .tk-total { border-top: 1px solid #ddd; margin-top: .15rem; padding-top: .15rem; font-weight: 600; }
+    .tokens .tk-total .tk-stage { color: #222; font-weight: 600; }
+
+    /* Narrow viewport — reached either on a small screen or by zooming in far
+       enough: the label/value grid stacks so neither column gets squeezed. */
+    @media (max-width: 30rem) {
+      dl { grid-template-columns: minmax(0, 1fr); gap: 0; }
+      dt { margin-top: .6rem; }
+      dt:first-of-type { margin-top: 0; }
+      .tokens li { max-width: none; }
+    }
+  </style>
+</head>
+<body>
+  {% set back_href = "/" %}
+  {% set back_label = "back to list" %}
+  {% set delete_job_id = job.id %}
+  {% include "_topbar.html" %}
+  <h1>{{ job.title or job.video_id }}</h1>
+  <dl>
+    <dt>Video</dt>
+    <dd><a href="{{ job.source_url }}" target="_blank" rel="noopener">{{ job.video_id or job.source_url }}</a></dd>
+    <dt>Channel</dt><dd>{{ job.channel or "-" }}</dd>
+    <dt>Category</dt>
+    <dd>{% for name, cat, prob, conf in [("laya", job.category, job.category_p, job.category_confidence), ("Jev", job.jev_category, job.jev_p, job.jev_confidence)] %}{% if cat %}{{ name }}: {{ cat }}{% if prob is not none %} (probability {{ "%.2f"|format(prob) }}, confidence {{ "%.2f"|format(conf) }}){% endif %}<br>{% endif %}{% endfor %}{% if not job.category and not job.jev_category %}-{% endif %}</dd>
+    <dt>Model</dt><dd>{{ job.model or "-" }}</dd>
+    <dt>Status</dt><dd class="status-{{ job.status }}">{{ job.stage if job.status == 'running' and job.stage else job.status }}</dd>
+    <dt>Submitted</dt><dd>{{ job.submitted_at }}</dd>
+    <dt>Elapsed</dt><dd>{{ job.elapsed or "-" }}</dd>
+    <dt>Original text</dt>
+    <dd>
+      {% if transcript_chars %}
+      <a href="/jobs/{{ job.id }}/transcript">transcript ({{ "{:,}".format(transcript_chars).replace(",", " ") }} chars)</a>
+      {% else %}-{% endif %}
+    </dd>
+    <dt>Tokens</dt>
+    <dd>
+      {% if job.summary_tokens or job.translate_tokens %}
+      <ul class="tokens">
+        <li><span class="tk-stage">summarize</span><span>{{ job.summary_tokens or 0 }}</span></li>
+        {% if job.translate_tokens %}
+        <li><span class="tk-stage">translate</span><span>{{ job.translate_tokens }}</span></li>
+        <li class="tk-total"><span class="tk-stage">total</span><span>{{ (job.summary_tokens or 0) + job.translate_tokens }}</span></li>
+        {% endif %}
+      </ul>
+      {% else %}-{% endif %}
+    </dd>
+  </dl>
+
+  {% if job.status == 'done' and job.summary %}
+  <h2>Result</h2>
+  <pre>{{ job.summary | markdown_bold }}</pre>
+  {% endif %}
+
+  {# The German section is skipped when the "translation" came back the same as
+     the text it was translated from (the model handing back its input, or a
+     summary that was already German) — two identical blocks would just be
+     noise. See translation_is_duplicate in app.py. #}
+  {% if job.status == 'done' and job.summary_de and not translation_identical %}
+  <h2>Ergebnis (Deutsch)</h2>
+  <pre>{{ job.summary_de | markdown_bold }}</pre>
+  {% elif job.status == 'done' and translation_identical %}
+  <p class="note">German translation omitted — identical to the text above.</p>
+  {% endif %}
+
+  {% if job.status == 'error' %}
+  <h2>Error</h2>
+  <div class="error"><pre>{{ job.error }}</pre></div>
+  <form method="post" action="/jobs/{{ job.id }}/retry">
+    <button type="submit">retry</button>
+  </form>
+  {% endif %}
+
+  {% if job.status in ('queued', 'running') %}
+  <p>Still {{ job.stage if job.status == 'running' and job.stage else job.status }} — this page refreshes automatically until it's done.</p>
+  {% endif %}
+</body>
+</html>

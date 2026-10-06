@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+  <title>Transcript — {{ job.title or job.video_id }}</title>
+  {% include "_head.html" %}
+  <style>
+    .meta { color: #666; font-size: .9rem; margin: 0 0 1.5rem; }
+    .meta a { color: #06c; }
+  </style>
+</head>
+<body>
+  {% set back_href = "/jobs/" ~ job.id %}
+  {% set back_label = "back to summary" %}
+  {% include "_topbar.html" %}
+  <h1>Transcript: {{ job.title or job.video_id }}</h1>
+  <p class="meta">
+    Whisper's raw transcription — the text the summary was made from.
+    {% if language %}Detected language: {{ language }}.{% endif %}
+    <a href="{{ job.source_url }}" target="_blank" rel="noopener">open source video</a>
+  </p>
+  <pre>{{ transcript }}</pre>
+</body>
+</html>
